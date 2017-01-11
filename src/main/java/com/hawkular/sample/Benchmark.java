@@ -16,25 +16,29 @@
  */
 package com.hawkular.sample;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
+import static java.util.stream.Collectors.toMap;
+
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import com.codahale.metrics.Counter;
-import com.codahale.metrics.Gauge;
-import com.codahale.metrics.Meter;
-import com.codahale.metrics.MetricRegistry;
-import com.codahale.metrics.Timer;
-import com.google.common.base.Stopwatch;
+import org.hawkular.metrics.dropwizard.HawkularReporter;
 
+import com.codahale.metrics.Metric;
+import com.codahale.metrics.MetricRegistry;
+import com.codahale.metrics.MetricSet;
+import com.codahale.metrics.ehcache.InstrumentedEhcache;
+import com.codahale.metrics.jvm.GarbageCollectorMetricSet;
+import com.codahale.metrics.jvm.MemoryUsageGaugeSet;
+import com.codahale.metrics.jvm.ThreadStatesGaugeSet;
+import com.google.common.collect.Lists;
+
+import net.sf.ehcache.CacheManager;
 import net.sf.ehcache.Ehcache;
 
 /**
@@ -43,82 +47,75 @@ import net.sf.ehcache.Ehcache;
 class Benchmark {
 
     private final MetricRegistry registry;
-    private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
+    private final Ehcache ehcache;
 
-    Benchmark(MetricRegistry registry, Ehcache ehcache) {
+    private Benchmark(MetricRegistry registry, Ehcache cache) {
         this.registry = registry;
-
-        final Database fakeDb = new Database();
-        final BackendMonitoring hashmapMonitoring = new BackendMonitoring(new HashmapBackend(fakeDb), HashmapBackend.NAME);
-        final BackendMonitoring guavaMonitoring = new BackendMonitoring(new GuavaBackend(fakeDb), GuavaBackend.NAME);
-        final BackendMonitoring ehcacheMonitoring = new BackendMonitoring(new EhcacheBackend(fakeDb, ehcache), EhcacheBackend.NAME);
-        executor.scheduleAtFixedRate(() -> {
-            Map<String, Object> presetElements = genData(5000);
-            hashmapMonitoring.runScenario(presetElements);
-            guavaMonitoring.runScenario(presetElements);
-            ehcacheMonitoring.runScenario(presetElements);
-        }, 0, 5, TimeUnit.MINUTES);
+        ehcache = InstrumentedEhcache.instrument(registry, cache);
     }
 
-    private static Map<String, Object> genData(int n) {
-        return IntStream.range(0, n)
+    private static MetricRegistry setupRegistry() {
+        String hostname;
+        try {
+            hostname = InetAddress.getLocalHost().getCanonicalHostName();
+        } catch (UnknownHostException e) {
+            hostname = "?";
+        }
+        MetricRegistry registry = new MetricRegistry();
+        HawkularReporter hawkularReporter = HawkularReporter.builder(registry, "com.hawkular.sample")
+                .addRegexTag(Pattern.compile(GuavaBackend.NAME + "\\..*"), "impl", GuavaBackend.NAME)
+                .addRegexTag(Pattern.compile(EhcacheBackend.NAME + "\\..*"), "impl", EhcacheBackend.NAME)
+                .addGlobalTag("hostname", hostname)
+                .prefixedWith(hostname + ".")
+                .setRegexMetricComposition(Pattern.compile("net\\.sf\\.ehcache"), Lists
+                        .newArrayList("mean", "meanrt", "5minrt", "98perc", "count"))
+                .setRegexMetricComposition(Pattern.compile(".*"), Lists.newArrayList("mean", "meanrt", "count"))
+                .build();
+        hawkularReporter.start(1, TimeUnit.SECONDS);
+
+        // Register some JVM metrics
+        registry.registerAll(new PrefixedMetricSet("gc", new GarbageCollectorMetricSet()));
+        registry.registerAll(new PrefixedMetricSet("memory", new MemoryUsageGaugeSet()));
+        registry.registerAll(new PrefixedMetricSet("thread", new ThreadStatesGaugeSet()));
+        return registry;
+    }
+
+    private void run() {
+        final DatabaseStub fakeDb = new DatabaseStub();
+        final BackendMonitoring monitoring = new BackendMonitoring(registry);
+        Map<String, Object> presetElements = IntStream.range(0, 100000)
                 .mapToObj(Integer::new)
                 .collect(Collectors.toMap(i -> UUID.randomUUID().toString(), i -> i));
+
+        monitoring.runScenario(presetElements, new GuavaBackend(fakeDb), GuavaBackend.NAME);
+        monitoring.runScenario(presetElements, new EhcacheBackend(fakeDb, ehcache), EhcacheBackend.NAME);
     }
 
-    void stop() {
-        executor.shutdown();
+    private static class PrefixedMetricSet implements MetricSet {
+
+        private final MetricSet metricSet;
+        private final String prefix;
+
+        private PrefixedMetricSet(String prefix, MetricSet metricSet) {
+            this.metricSet = metricSet;
+            this.prefix = prefix;
+        }
+
+        @Override public Map<String, Metric> getMetrics() {
+            return metricSet.getMetrics().entrySet().stream()
+                    .collect(toMap(
+                            e -> prefix + "." + e.getKey(),
+                            Map.Entry::getValue
+                    ));
+        }
     }
 
-    private class BackendMonitoring {
-        private final Backend backend;
-        private final String name;
-        private final Timer readTimer;
-
-        private BackendMonitoring(Backend backend, String name) {
-            this.backend = backend;
-            this.name = name;
-            registry.register(name + ".size", (Gauge<Long>) backend::count);
-            readTimer = registry.timer(name + ".read");
-        }
-
-        private void runScenario(Map<String, Object> presetElements) {
-            System.out.println("Starting scenario for " + name);
-            final Meter readCacheMeter = registry.meter(name + ".cache.read");
-            final Meter readDbMeter = registry.meter(name + ".db.read");
-            final Counter numberItemsRead = registry.counter(name + ".total.read.count");
-            // Setup preset elements
-            backend.init(presetElements);
-            List<String> keys = new ArrayList<>(presetElements.keySet());
-            ThreadLocalRandom rnd = ThreadLocalRandom.current();
-            Stopwatch watch = Stopwatch.createStarted();
-            while (watch.elapsed(TimeUnit.SECONDS) < 40) {
-                int pos = rnd.nextInt(0, keys.size());
-                runWithBenchmark(() -> {
-                    backend.get(keys.get(pos));
-                    if (backend.isLastReadFromCache()) {
-                        readCacheMeter.mark();
-                    } else {
-                        readDbMeter.mark();
-                    }
-                    numberItemsRead.inc();
-                }, readTimer);
-            }
-            // Reset metrics
-            backend.init(new HashMap<>());
-            registry.remove(name + ".cache.read");
-            registry.remove(name + ".db.read");
-            registry.remove(name + ".total.read.count");
-            System.out.println("Ending scenario for " + name);
-        }
-
-        private void runWithBenchmark(Runnable r, Timer t) {
-            final Timer.Context ctx = t.time();
-            try {
-                r.run();
-            } finally {
-                ctx.stop();
-            }
-        }
+    public static void main(String[] args) {
+        MetricRegistry registry = setupRegistry();
+        CacheManager cacheManager = CacheManager.newInstance();
+        Ehcache cache = cacheManager.addCacheIfAbsent("testCache");
+        Benchmark benchmark = new Benchmark(registry, cache);
+        benchmark.run();
+        cacheManager.shutdown();
     }
 }

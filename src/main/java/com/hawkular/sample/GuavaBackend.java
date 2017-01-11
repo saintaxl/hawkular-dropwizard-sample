@@ -17,7 +17,6 @@
 package com.hawkular.sample;
 
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
@@ -31,22 +30,22 @@ public class GuavaBackend implements Backend {
     public static final String NAME = "guava";
 
     private final LoadingCache<String, Object> cache;
-    private final Database db;
-    private final AtomicBoolean isLastReadFromCache = new AtomicBoolean(false);
+    private final DatabaseStub db;
+    private boolean isLastReadFromCache = false;
 
-    public GuavaBackend(Database db) {
+    public GuavaBackend(DatabaseStub db) {
         this.db = db;
         cache = CacheBuilder.newBuilder()
                 .build(new CacheLoader<String, Object>() {
                     @Override public Object load(String s) throws Exception {
-                        isLastReadFromCache.set(false);
+                        isLastReadFromCache = false;
                         return db.get(s);
                     }
                 });
     }
 
     @Override public Object get(String key) {
-        isLastReadFromCache.set(true);
+        isLastReadFromCache = true;
         return cache.getUnchecked(key);
     }
 
@@ -60,6 +59,6 @@ public class GuavaBackend implements Backend {
     }
 
     @Override public boolean isLastReadFromCache() {
-        return isLastReadFromCache.get();
+        return isLastReadFromCache;
     }
 }

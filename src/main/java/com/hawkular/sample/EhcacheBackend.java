@@ -17,7 +17,6 @@
 package com.hawkular.sample;
 
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import net.sf.ehcache.Ehcache;
 import net.sf.ehcache.Element;
@@ -29,11 +28,11 @@ public class EhcacheBackend implements Backend {
 
     public static final String NAME = "ehcache";
 
-    private final Database db;
+    private final DatabaseStub db;
     private final Ehcache cache;
-    private final AtomicBoolean isLastReadFromCache = new AtomicBoolean(false);
+    private boolean isLastReadFromCache = false;
 
-    public EhcacheBackend(Database db, Ehcache cache) {
+    public EhcacheBackend(DatabaseStub db, Ehcache cache) {
         this.db = db;
         this.cache = cache;
     }
@@ -43,9 +42,9 @@ public class EhcacheBackend implements Backend {
         if (obj == null) {
             obj = db.get(key);
             cache.put(new Element(key, obj));
-            isLastReadFromCache.set(false);
+            isLastReadFromCache = false;
         } else {
-            isLastReadFromCache.set(true);
+            isLastReadFromCache = true;
         }
         return obj;
     }
@@ -60,6 +59,6 @@ public class EhcacheBackend implements Backend {
     }
 
     @Override public boolean isLastReadFromCache() {
-        return isLastReadFromCache.get();
+        return isLastReadFromCache;
     }
 }

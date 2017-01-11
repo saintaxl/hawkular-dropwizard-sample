@@ -22,11 +22,11 @@ import java.util.Map;
 /**
  * @author Joel Takvorian
  */
-class Database {
+class DatabaseStub {
 
     private final Map<String, Object> fakeDB = new HashMap<>();
 
-    private void simulateDelay(long ms) {
+    private void simulateLatency(long ms) {
         try {
             Thread.sleep(ms);
         } catch (InterruptedException e) {
@@ -35,7 +35,7 @@ class Database {
     }
 
     Object get(String key) {
-        simulateDelay(10);
+        simulateLatency(8);
         return fakeDB.get(key);
     }
 

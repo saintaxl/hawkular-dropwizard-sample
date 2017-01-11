@@ -28,10 +28,10 @@ public class HashmapBackend implements Backend {
     public static final String NAME = "hashmap";
 
     private final Map<String, Object> map = new HashMap<>();
-    private final Database db;
+    private final DatabaseStub db;
     private final AtomicBoolean isLastReadFromCache = new AtomicBoolean(false);
 
-    public HashmapBackend(Database db) {
+    public HashmapBackend(DatabaseStub db) {
         this.db = db;
     }
 
