@@ -33,7 +33,7 @@
     <dependency>
       <groupId>org.hawkular.metrics</groupId>
       <artifactId>hawkular-dropwizard-reporter</artifactId>
-      <version>0.1.1-SNAPSHOT</version>
+      <version>0.1.1</version>
     </dependency>
     <dependency>
       <groupId>com.google.guava</groupId>
