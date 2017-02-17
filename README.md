@@ -1,7 +1,2 @@
-# hawkular-dropwizard-sample
+# Sample code for Hawkular, client-side
 
-Run with:
-
-```bash
-   mvn wildfly-swarm:run -Dswarm.port.offset=5
-```
