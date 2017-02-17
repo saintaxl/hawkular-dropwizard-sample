@@ -1,0 +1,5 @@
+tenant: jotak
+prefix: ${host}.
+globalTags:
+  hostname: ${host}
+  who: jotak

@@ -18,16 +18,25 @@ package com.hawkular.sample;
 
 import static java.util.stream.Collectors.toMap;
 
-import java.net.InetAddress;
-import java.net.UnknownHostException;
+import java.io.IOException;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import org.hawkular.metrics.dropwizard.HawkularReporter;
+import org.hawkular.metrics.client.HawkularClient;
+import org.hawkular.metrics.client.HawkularFactory;
+import org.hawkular.metrics.client.binder.HawkularDropwizardBinder;
+import org.hawkular.metrics.client.grafana.GrafanaAnnotation;
+import org.hawkular.metrics.client.grafana.GrafanaConnection;
+import org.hawkular.metrics.client.grafana.GrafanaDashboard;
+import org.hawkular.metrics.client.grafana.GrafanaDashboardMessage;
+import org.hawkular.metrics.client.grafana.GrafanaDatasource;
+import org.hawkular.metrics.client.grafana.GrafanaPanel;
+import org.hawkular.metrics.client.grafana.GrafanaRow;
+import org.hawkular.metrics.client.grafana.GrafanaTarget;
+import org.hawkular.metrics.client.monitor.CPUMonitoring;
+import org.hawkular.metrics.client.monitor.MemoryMonitoring;
 
 import com.codahale.metrics.Metric;
 import com.codahale.metrics.MetricRegistry;
@@ -36,7 +45,6 @@ import com.codahale.metrics.ehcache.InstrumentedEhcache;
 import com.codahale.metrics.jvm.GarbageCollectorMetricSet;
 import com.codahale.metrics.jvm.MemoryUsageGaugeSet;
 import com.codahale.metrics.jvm.ThreadStatesGaugeSet;
-import com.google.common.collect.Lists;
 
 import net.sf.ehcache.CacheManager;
 import net.sf.ehcache.Ehcache;
@@ -46,46 +54,54 @@ import net.sf.ehcache.Ehcache;
  */
 class Benchmark {
 
-    private final MetricRegistry registry;
+    private final HawkularClient hawkular;
     private final Ehcache ehcache;
+    private final GrafanaDashboard dashboardOneByOne;
+    private final GrafanaConnection grafanaConnection;
+    static final String DATASOURCE_NAME = "testds";
 
-    private Benchmark(MetricRegistry registry, Ehcache cache) {
-        this.registry = registry;
-        ehcache = InstrumentedEhcache.instrument(registry, cache);
-    }
+    private Benchmark(HawkularClient hawkular, Ehcache cache) {
+        this.hawkular = hawkular;
+        ehcache = cache;
 
-    private static MetricRegistry setupRegistry() {
-        String hostname;
+        GrafanaDashboard dashboardAllAtOnce = new GrafanaDashboard()
+                .title("dashboard1")
+                .addAnnotation(new GrafanaAnnotation("Errors", "BackendMonitoring.error.logs")
+                        .color("red"))
+                .addAnnotation(new GrafanaAnnotation("Warnings", "BackendMonitoring.warning.logs")
+                        .color("orange"))
+                .addAnnotation(new GrafanaAnnotation("Info", "BackendMonitoring.info.logs")
+                        .color("blue"))
+                .addRow(new GrafanaRow()
+                        .addPanel(GrafanaPanel.graph()
+                                .title("Storage size")
+                                .addTarget(GrafanaTarget.gaugesTagged(BackendMonitoring.TAG_METRIC_SIZE)))
+                        .addPanel(GrafanaPanel.graph()
+                                .title("Read response time")
+                                .addTarget(GrafanaTarget.gaugesTagged(BackendMonitoring.TAG_METRIC_RESPONSE_TIME))))
+                .addRow(new GrafanaRow()
+                        .addPanel(GrafanaPanel.graph()
+                                .title("Read cache vs DB (mean rate)"))
+                        .addPanel(GrafanaPanel.graph()
+                                .title("Read cache vs DB (count)")
+                                .addTarget(GrafanaTarget.countersTagged(BackendMonitoring.TAG_METRIC_READ))));
+        grafanaConnection = new GrafanaConnection("eyJrIjoiN3dQcGRpVjVqZEFUMFBmOUwxa3Z3RTVFQ2ZaQ2g2ZFEiLCJuIjoidGVzdCIsImlkIjoxfQ==");
         try {
-            hostname = InetAddress.getLocalHost().getCanonicalHostName();
-        } catch (UnknownHostException e) {
-            hostname = "?";
+            grafanaConnection.createOrUpdateDatasource(GrafanaDatasource.fromHawkularConfig(DATASOURCE_NAME, hawkular.getInfo()));
+            grafanaConnection.sendDashboard(new GrafanaDashboardMessage(dashboardAllAtOnce, DATASOURCE_NAME));
+        } catch (IOException e) {
+            e.printStackTrace();
         }
-        MetricRegistry registry = new MetricRegistry();
-        HawkularReporter hawkularReporter = HawkularReporter.builder(registry, "com.hawkular.sample")
-                .addRegexTag(Pattern.compile(GuavaBackend.NAME + "\\..*"), "impl", GuavaBackend.NAME)
-                .addRegexTag(Pattern.compile(EhcacheBackend.NAME + "\\..*"), "impl", EhcacheBackend.NAME)
-                .addGlobalTag("hostname", hostname)
-                .prefixedWith(hostname + ".")
-                .setRegexMetricComposition(Pattern.compile("net\\.sf\\.ehcache"), Lists
-                        .newArrayList("mean", "meanrt", "5minrt", "98perc", "count"))
-                .setRegexMetricComposition(Pattern.compile(".*"), Lists.newArrayList("mean", "meanrt", "count"))
-                .build();
-        hawkularReporter.start(1, TimeUnit.SECONDS);
 
-        // Register some JVM metrics
-        registry.registerAll(new PrefixedMetricSet("gc", new GarbageCollectorMetricSet()));
-        registry.registerAll(new PrefixedMetricSet("memory", new MemoryUsageGaugeSet()));
-        registry.registerAll(new PrefixedMetricSet("thread", new ThreadStatesGaugeSet()));
-        return registry;
+        dashboardOneByOne = new GrafanaDashboard().title("dashboard2");
     }
 
     private void run() {
         final DatabaseStub fakeDb = new DatabaseStub();
-        final BackendMonitoring monitoring = new BackendMonitoring(registry);
+        final BackendMonitoring monitoring = new BackendMonitoring(hawkular, grafanaConnection, dashboardOneByOne);
         Map<String, Object> presetElements = IntStream.range(0, 100000)
                 .mapToObj(Integer::new)
-                .collect(Collectors.toMap(i -> UUID.randomUUID().toString(), i -> i));
+                .collect(toMap(i -> UUID.randomUUID().toString(), i -> i));
 
         monitoring.runScenario(presetElements, new GuavaBackend(fakeDb), GuavaBackend.NAME);
         monitoring.runScenario(presetElements, new EhcacheBackend(fakeDb, ehcache), EhcacheBackend.NAME);
@@ -110,12 +126,39 @@ class Benchmark {
         }
     }
 
-    public static void main(String[] args) {
-        MetricRegistry registry = setupRegistry();
+    private static void monitorJvm(HawkularClient hawkular) {
+        MetricRegistry registry = new MetricRegistry();
+        // Register some JVM metrics
+        registry.registerAll(new PrefixedMetricSet("gc", new GarbageCollectorMetricSet()));
+        registry.registerAll(new PrefixedMetricSet("memory", new MemoryUsageGaugeSet()));
+        registry.registerAll(new PrefixedMetricSet("thread", new ThreadStatesGaugeSet()));
+        HawkularDropwizardBinder
+                .fromRegistry(registry)
+                .withTag("family", "jvm")
+                .bindWith(hawkular.getInfo(), 1, TimeUnit.SECONDS);
+    }
+
+    private static Ehcache monitorEhcache(HawkularClient hawkular) {
+        MetricRegistry registry = new MetricRegistry();
+        HawkularDropwizardBinder
+                .fromRegistry(registry)
+                .withTag("family", "ehcache")
+                .bindWith(hawkular.getInfo(), 1, TimeUnit.SECONDS);
         CacheManager cacheManager = CacheManager.newInstance();
-        Ehcache cache = cacheManager.addCacheIfAbsent("testCache");
-        Benchmark benchmark = new Benchmark(registry, cache);
-        benchmark.run();
-        cacheManager.shutdown();
+        return InstrumentedEhcache.instrument(registry,
+                cacheManager.addCacheIfAbsent("testCache"));
+    }
+
+    public static void main(String[] args) {
+        HawkularClient hawkular = HawkularFactory.load().builder()
+                .addHeader("some-special-header", "value")
+                .build();
+        monitorJvm(hawkular);
+        Ehcache cache = monitorEhcache(hawkular);
+        Benchmark benchmark = new Benchmark(hawkular, cache);
+        hawkular.prepareMonitoringSession(1, TimeUnit.SECONDS)
+                .feeds(CPUMonitoring.create())
+                .feeds(MemoryMonitoring.create())
+                .run(benchmark::run);
     }
 }

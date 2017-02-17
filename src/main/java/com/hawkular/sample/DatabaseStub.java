@@ -18,6 +18,11 @@ package com.hawkular.sample;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * @author Joel Takvorian
@@ -25,8 +30,33 @@ import java.util.Map;
 class DatabaseStub {
 
     private final Map<String, Object> fakeDB = new HashMap<>();
+    private AtomicBoolean simulateFailure = new AtomicBoolean(false);
+
+    public DatabaseStub() {
+        Random rnd = new Random();
+        ScheduledExecutorService executorService = Executors.newSingleThreadScheduledExecutor();
+        executorService.scheduleAtFixedRate(() -> {
+            if (simulateFailure.get()) {
+                if (rnd.nextInt(100) < 20) {
+                    simulateFailure.set(false);
+                }
+            } else {
+                if (rnd.nextInt(100) == 0) {
+                    simulateFailure.set(true);
+                }
+            }
+        }, 0, 1, TimeUnit.SECONDS);
+    }
 
     private void simulateLatency(long ms) {
+        if (simulateFailure.get()) {
+            try {
+                Thread.sleep(5000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            throw new RuntimeException("Warning: mysql_connect(): Lost connection to MySQL server during query");
+        }
         try {
             Thread.sleep(ms);
         } catch (InterruptedException e) {
